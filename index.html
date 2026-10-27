@@ -309,8 +309,26 @@ function applyOps(tree, ids, doneText, ops) {
   const fallback = tree.sections.find(s => FALLBACK_RE.test(s.title)) || null;
   const done = parseDone(doneText);
   const notes = [];
+  const norm = s => String(s).replace(/\*/g, "").replace(/^\s*\d+\.\s*/, "").replace(/[:\s]+$/, "").trim().toLowerCase();
+  // Gemini sometimes returns a title or number instead of the id; resolve it if unambiguous.
+  const lookup = (id, kind) => {
+    let n = ids.get(val(id));
+    if (n || !val(id)) return n;
+    const x = norm(val(id));
+    if (kind === "sec") {
+      if (/^\d+$/.test(x)) return tree.sections[+x - 1];
+      let hits = tree.sections.filter(s => norm(s.title) === x);
+      if (!hits.length && x.length >= 4) hits = tree.sections.filter(s => norm(s.title).includes(x));
+      return hits.length === 1 ? hits[0] : undefined;
+    }
+    if (kind === "group") {
+      const hits = [...ids.values()].filter(g => g.kind === "group" && !g.removed && norm(g.raw) === x);
+      return hits.length === 1 ? hits[0] : undefined;
+    }
+    return undefined;
+  };
   const need = (id, kind) => {
-    const n = ids.get(val(id));
+    const n = lookup(id, kind);
     if (!n) throw new Error(`Unknown id "${id}"`);
     if (n.removed) throw new Error(`${id} was already changed by another operation`);
     if (kind && n.kind !== kind) throw new Error(`${id} is not a ${kind === "sec" ? "section" : kind}`);
@@ -537,7 +555,7 @@ async function commitFiles(files, message, parent) {
 // ---------- Gemini ----------
 const SYSTEM_PROMPT = `You maintain a personal task list stored as a tree. The user writes a command in German or English.
 You see TODO as sections (S..), optional groups (G..) and leaves (L..), plus a flat DONE list (D1, D2, ...). Return JSON with "operations" and "summary".
-All ids refer to the tree as shown; they stay valid while all operations are applied. Never invent ids.
+All ids refer to the tree as shown; they stay valid while all operations are applied. Never invent ids. Always give sections and groups by their id (e.g. "S2", "G4"), never by their title.
 
 Operations:
 - add_event: {date:"YYYY-MM-DD", end_date?, label?, text}  Adds a dated event to the chronological section (the one marked [chronological]). The code creates the day group, writes the weekday and sorts by time. "label" is the bold prefix, e.g. "10:30 Uhr:" or "08:00 – 09:30 Uhr:" or "ab 11:30 Uhr (To-Do):", and is omitted for events without a time. "text" is the description. Use end_date only for multi-day events.
@@ -578,9 +596,9 @@ async function callGemini(command, treeText, doneText, now) {
               type: "OBJECT",
               properties: {
                 type: { type: "STRING", enum: ["add_event", "add_leaf", "add_group", "edit", "delete", "move_to_done", "move", "reopen"] },
-                id: { type: "STRING" },
-                section: { type: "STRING" },
-                group: { type: "STRING" },
+                id: { type: "STRING", description: "Leaf id such as L17" },
+                section: { type: "STRING", description: "Section id such as S2, never the title" },
+                group: { type: "STRING", description: "Group id such as G4, never the title" },
                 date: { type: "STRING" },
                 end_date: { type: "STRING" },
                 label: { type: "STRING" },
