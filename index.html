@@ -67,7 +67,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Task Manager<small>v1.3</small></h1>
+  <h1>Task Manager<small>v1.4</small></h1>
   <nav id="tabs">
     <button data-tab="cmd" class="active">Command</button>
     <button data-tab="todo">Todo</button>
@@ -149,19 +149,44 @@ function parseTodo(text) {
     else fail(i, "more than two list levels are not supported");
   });
   if (!sections.length) throw new Error("todo.md has no # sections");
-  return { sections };
+  const tree = { sections };
+  // In category sections a single-item category is written inline: "* **Title:** text" -> group with one leaf.
+  sections.forEach((s, i) => {
+    if (secMode(tree, i) !== "category") return;
+    s.items = s.items.map(n => {
+      if (n.kids.length) return n;
+      const m = /^\*\*([^*]+?)\*\*\s+(\S.*)$/.exec(n.raw);
+      return m ? { raw: `**${m[1]}**`, kids: [mkNode(m[2])], removed: false } : n;
+    });
+  });
+  return tree;
 }
 
+// "dated" = first, chronological section; "flat" = last section (plain items only);
+// "category" = all sections in between (bold category + items).
+function secMode(tree, i) {
+  if (DATED_RE.test(tree.sections[i].title)) return "dated";
+  return i === tree.sections.length - 1 ? "flat" : "category";
+}
+const modeOf = (tree, s) => secMode(tree, tree.sections.indexOf(s));
+const catKey = s => String(s).replace(/\*/g, "").replace(/[:\s]+$/, "").trim().toLowerCase();
+const catTitle = raw => String(raw).replace(/^\*\*|\*\*$/g, "").replace(/[:\s]+$/, "").trim();
+
 function serializeTodo(tree) {
-  const blocks = tree.sections.map(s => {
+  const blocks = tree.sections.map((s, si) => {
+    const mode = secMode(tree, si);
     const out = [];
     for (const n of s.items) {
       if (n.removed) continue;
       if (n.kids.length) {
         const ks = n.kids.filter(k => !k.removed);
         if (!ks.length) continue;              // empty parent node disappears
-        out.push("* " + n.raw);
-        ks.forEach(k => out.push("  * " + k.raw));
+        if (mode === "category" && ks.length === 1) {
+          out.push(`* **${catTitle(n.raw)}:** ${ks[0].raw}`);   // single item: same line
+        } else {
+          out.push("* " + n.raw);
+          ks.forEach(k => out.push("  * " + k.raw));
+        }
       } else out.push("* " + n.raw);
     }
     return "# " + s.title + "\n" + (out.length ? "\n" + out.join("\n") + "\n" : "");
@@ -187,13 +212,17 @@ function assignIds(tree) {
 function renderTree(tree) {
   const out = [];
   for (const s of tree.sections) {
-    out.push(`${s.id} | ${s.title}${DATED_RE.test(s.title) ? "   [chronological section: use add_event]" : ""}`);
+    const mode = modeOf(tree, s);
+    const hint = mode === "dated" ? "   [chronological section: use add_event]"
+      : mode === "flat" ? "   [plain list: items only, no categories]"
+      : "   [categories: every item belongs to a category]";
+    out.push(`${s.id} | ${s.title}${hint}`);
     for (const n of s.items) {
       if (n.removed) continue;
       if (n.kids.length) {
         const ks = n.kids.filter(k => !k.removed);
         if (!ks.length) continue;
-        out.push(`  ${n.id} | ${n.raw}`);
+        out.push(`  ${n.id} | ${mode === "category" ? "category: " + catTitle(n.raw) : n.raw}`);
         ks.forEach(k => out.push(`    ${k.id} | ${k.raw}`));
       } else out.push(`  ${n.id} | ${n.raw}`);
     }
@@ -351,7 +380,17 @@ function applyOps(tree, ids, doneText, ops) {
     if (!sec) sec = fallback;
     if (!sec) throw new Error("No target section");
     if (sec === dated) throw new Error("The chronological section only accepts add_event");
+    if (!grp && val(op.category) && modeOf(tree, sec) === "category") grp = getCat(sec, op.category);
     return { sec, grp };
+  };
+  // Finds a category by title (case-insensitive, colon ignored) or creates it. Only for category sections.
+  const getCat = (sec, title) => {
+    if (modeOf(tree, sec) !== "category") throw new Error(`Section "${sec.title}" holds plain items only, no categories`);
+    const t = cleanText(title).replace(/\*/g, "").replace(/[:\s]+$/, "");
+    if (!t) throw new Error("Category title is empty");
+    let g = sec.items.find(n => !n.removed && n.kids.length && catKey(n.raw) === catKey(t));
+    if (!g) { g = { raw: `**${t}:**`, kids: [], removed: false }; sec.items.push(g); }
+    return g;
   };
   const put = (t, raw) => { const n = mkNode(raw); (t.grp ? t.grp.kids : t.sec.items).push(n); };
 
@@ -367,22 +406,30 @@ function applyOps(tree, ids, doneText, ops) {
         break;
       }
       case "add_leaf": {
-        const t = target(op);
         const raw = cleanText(op.text);
         if (!raw) throw new Error("add_leaf needs text");
+        const t = target(op);
         put(t, raw); notes.push(`add: ${raw}`);
         break;
       }
       case "add_group": {
-        const t = target({ section: op.section });
         const title = cleanText(op.title);
         const leaves = (op.leaves || []).map(cleanText).filter(Boolean);
         if (!title || !leaves.length) throw new Error("add_group needs a title and leaves");
-        const key = s => s.replace(/\*/g, "").replace(/[:\s]+$/, "").toLowerCase();
-        let g = t.sec.items.find(n => !n.removed && n.kids.length && key(n.raw) === key(title));
-        if (!g) { g = { raw: /\*\*/.test(title) ? title : `**${title}**`, kids: [], removed: false }; t.sec.items.push(g); }
+        const t = target({ section: op.section });
+        const g = getCat(t.sec, title);
         leaves.forEach(x => g.kids.push(mkNode(x)));
-        notes.push(`group: ${title} (+${leaves.length})`);
+        notes.push(`category: ${catTitle(g.raw)} (+${leaves.length})`);
+        break;
+      }
+      case "rename_group": {
+        const g = need(op.group || op.id, "group");
+        if (modeOf(tree, g.sec) !== "category") throw new Error("Only categories can be renamed");
+        const title = cleanText(op.title).replace(/\*/g, "").replace(/[:\s]+$/, "");
+        if (!title) throw new Error("rename_group needs a title");
+        if (g.sec.items.some(n => n !== g && !n.removed && n.kids.length && catKey(n.raw) === catKey(title)))
+          throw new Error(`Category "${title}" already exists; move the items instead`);
+        g.raw = `**${title}:**`; notes.push(`rename category: ${title}`);
         break;
       }
       case "edit": {
@@ -565,23 +612,26 @@ All ids refer to the tree as shown; they stay valid while all operations are app
 
 Operations:
 - add_event: {date:"YYYY-MM-DD", end_date?, label?, text}  Adds a dated event to the chronological section (the one marked [chronological]). The code creates the day group, writes the weekday and sorts by time. "label" is the bold prefix, e.g. "10:30 Uhr:" or "08:00 – 09:30 Uhr:" or "ab 11:30 Uhr (To-Do):", and is omitted for events without a time. "text" is the description. Use end_date only for multi-day events.
-- add_leaf: {section, group?, text}  New item in any other section; "group" only if it clearly belongs in an existing group.
-- add_group: {section, title, leaves[]}  New parent item with several children, e.g. title "Behörden & Steuern:". If a group with that title exists, the leaves are added to it.
+- add_leaf: {section, category?, text}  New item in a non-chronological section. In sections marked [categories] give "category" = the title of the category (see below). In the [plain list] section omit category.
+- add_group: {section, title, leaves[]}  Several new items under one category title in a [categories] section. If that category exists, the leaves are added to it.
+- rename_group: {group, title}  Rename a category (only if the user asks for it).
 - edit: {id, text}  Replace the full text of one leaf (keep its bold label/markdown formatting). Do NOT use it to change a date or time.
 - delete: {id}
 - move_to_done: {id}  The item is archived in the DONE list by the code (train rides are just removed).
-- move: {id, section, group?}  Move a leaf to a non-chronological section.
-- reopen: {done_item: <number>, section, group?}  Take an item from DONE back into the TODO tree.
+- move: {id, section, category?}  Move a leaf to another non-chronological section or category.
+- reopen: {done_item: <number>, section, category?}  Take an item from DONE back into the TODO tree.
 Only leaves can be edited, deleted or moved, never groups or sections. To clear a group, delete or finish all of its leaves; the empty group is removed by the code.
 To change an event's date or time: delete the old leaf and add_event the new one.
 
 Rules:
 - Do only what the command asks. Never touch other items.
 - If an item does not fit any other section, put it in the section "Mittelfristig Allgmein" (the catch-all).
-- Keep the user's wording; do not translate item text. Text must not start with a list marker.
+- Categories: in [categories] sections every item belongs to a category, whose title is an ultra-short tag of at most three words (e.g. "Reise", "Anschaffungen", "Behörden & Steuern"). Think about it for each new item: (1) if it fits an existing category in that section, use that category's exact title; (2) otherwise create a new category; (3) if the new category is closely related to existing categories or items, create the new broader category and use "move" to bring the related existing items into it. Single items and multi-item categories are laid out by the code, you only choose titles.
+- The last section ("Wohnung München") is a plain list: items only, without category.
+- Write ALL item text, labels and category titles in German, even if the command is in English (translate the user's command). Keep existing items' wording. Text must not start with a list marker.
 - Resolve relative dates ("morgen", "nächsten Freitag") from the given today.
 - If the command is ambiguous, refers to something that does not exist, or needs no change, return an empty operations array and explain in the summary.
-- The summary is one short sentence in the language of the command.`;
+- The summary is one short sentence in German.`;
 
 async function callGemini(command, treeText, doneText, now) {
   const body = {
@@ -601,7 +651,8 @@ async function callGemini(command, treeText, doneText, now) {
             items: {
               type: "OBJECT",
               properties: {
-                type: { type: "STRING", enum: ["add_event", "add_leaf", "add_group", "edit", "delete", "move_to_done", "move", "reopen"] },
+                type: { type: "STRING", enum: ["add_event", "add_leaf", "add_group", "rename_group", "edit", "delete", "move_to_done", "move", "reopen"] },
+                category: { type: "STRING", description: "Category title (1-3 words), not an id" },
                 id: { type: "STRING", description: "Leaf id such as L17" },
                 section: { type: "STRING", description: "Section id such as S2, never the title" },
                 group: { type: "STRING", description: "Group id such as G4, never the title" },
