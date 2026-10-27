@@ -60,7 +60,11 @@ The data repo contains two Markdown files.
 Rules:
 
 - The sections are fixed. Rename, add or remove them by hand in GitHub.
-- A bullet with children is a **group**, a bullet without children is a **leaf**. No deeper levels. If the app finds any, it refuses to edit instead of guessing.
+- There are three levels: sections (fixed), groups/categories, and leaves (single items). No deeper levels. If the app finds any, it refuses to edit instead of guessing.
+- **First section (chronological):** every leaf sits under a day group, even a single one.
+- **Sections in between:** every item belongs to a bold category with an ultra-short title (a tag or up to three words). A category with one item is written on one line (`* **Reise:** Text`), with several items as a sub-list. The app picks an existing category, creates a new one, or creates a broader one and moves related items into it. Layout is handled by the code.
+- **Last section:** a plain list of items, no categories.
+- All text the app writes is in German, even if the command is in English.
 - The section whose title contains "Chronologisch" is the sorted calendar. Section "Mittelfristig" is the catch-all for items that fit nowhere else.
 
 `done.md` is a flat list, newest at the bottom:
