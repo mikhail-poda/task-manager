@@ -67,7 +67,7 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Task Manager<small>v1.4</small></h1>
+  <h1>Task Manager<small>v1.5</small></h1>
   <nav id="tabs">
     <button data-tab="cmd" class="active">Command</button>
     <button data-tab="todo">Todo</button>
@@ -104,6 +104,7 @@
     <label>Branch</label><input id="s-branch" autocomplete="off">
     <label>Todo file path</label><input id="s-todoPath" autocomplete="off">
     <label>Done file path</label><input id="s-donePath" autocomplete="off">
+    <label>Background file (optional, e.g. context.md: who is who; leave empty to skip)</label><input id="s-contextPath" autocomplete="off">
     <label>Gemini API key</label>
     <input id="s-gemKey" type="password" autocomplete="off">
     <label>Gemini model</label><input id="s-model" autocomplete="off">
@@ -495,9 +496,9 @@ function lineDiff(a, b) {
 // ---------- config ----------
 const DEFAULTS = {
   ghToken: "", owner: "mikhail-poda", repo: "tasks-data", branch: "main",
-  todoPath: "todo.md", donePath: "done.md", gemKey: "", model: "gemini-2.5-flash", confirm: false
+  todoPath: "todo.md", donePath: "done.md", contextPath: "context.md", gemKey: "", model: "gemini-2.5-flash", confirm: false
 };
-const FIELDS = ["ghToken", "owner", "repo", "branch", "todoPath", "donePath", "gemKey", "model"];
+const FIELDS = ["ghToken", "owner", "repo", "branch", "todoPath", "donePath", "contextPath", "gemKey", "model"];
 const $ = id => document.getElementById(id);
 
 function loadCfg() {
@@ -574,8 +575,11 @@ async function getFile(path, ref) {
 }
 async function fetchState() {
   const head = await getHead();
-  const [todo, done] = await Promise.all([getFile(cfg.todoPath, head), getFile(cfg.donePath, head)]);
-  return { head, todo, done };
+  const [todo, done, context] = await Promise.all([
+    getFile(cfg.todoPath, head), getFile(cfg.donePath, head),
+    cfg.contextPath ? getFile(cfg.contextPath, head) : Promise.resolve("")   // optional background file
+  ]);
+  return { head, todo, done, context };
 }
 async function commitFiles(files, message, parent) {
   const base = repoBase();
@@ -628,16 +632,17 @@ Rules:
 - If an item does not fit any other section, put it in the section "Mittelfristig Allgmein" (the catch-all).
 - Categories: in [categories] sections every item belongs to a category, whose title is an ultra-short tag of at most three words (e.g. "Reise", "Anschaffungen", "Behörden & Steuern"). Think about it for each new item: (1) if it fits an existing category in that section, use that category's exact title; (2) otherwise create a new category; (3) if the new category is closely related to existing categories or items, create the new broader category and use "move" to bring the related existing items into it. Single items and multi-item categories are laid out by the code, you only choose titles.
 - The last section ("Wohnung München") is a plain list: items only, without category.
-- Write ALL item text, labels and category titles in German, even if the command is in English (translate the user's command). Keep existing items' wording. Text must not start with a list marker.
+- Do not copy the user's words 1:1. The user's German is weak and the command may be in English: understand the intent and write each item as a clear, natural, correct and concise German phrase in the style of the existing items (fix spelling and grammar, use a short noun/infinitive phrase). Keep names, numbers, dates and places exactly. Write ALL item text, labels and category titles in German. Never change the wording of existing items unless asked. Text must not start with a list marker.
+- Use the BACKGROUND section (if present) to understand who is who and to choose the right category. Add background details to an item only when they are needed to make it understandable, and never invent facts.
 - Resolve relative dates ("morgen", "nächsten Freitag") from the given today.
 - If the command is ambiguous, refers to something that does not exist, or needs no change, return an empty operations array and explain in the summary.
 - The summary is one short sentence in German.`;
 
-async function callGemini(command, treeText, doneText, now) {
+async function callGemini(command, treeText, doneText, now, context) {
   const body = {
     systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
     contents: [{ role: "user", parts: [{ text:
-      `Today: ${now.date} (${now.weekday}), time ${now.hhmm}\n\nTODO:\n${treeText}\n\nDONE:\n${doneText}\n\nCOMMAND:\n${command}` }] }],
+      `Today: ${now.date} (${now.weekday}), time ${now.hhmm}\n\n${context && context.trim() ? "BACKGROUND (about the user, for understanding only):\n" + context.trim() + "\n\n" : ""}TODO:\n${treeText}\n\nDONE:\n${doneText}\n\nCOMMAND:\n${command}` }] }],
     generationConfig: {
       temperature: 0,
       maxOutputTokens: 8192,
@@ -744,7 +749,7 @@ async function doCommit() {
   try {
     const sha = await commitFiles(p.files, p.message, state.head);
     log(`Committed ${sha.slice(0, 7)}: ${p.message}`, "ok");
-    state = { head: sha, todo: p.newTodo, done: p.newDone };
+    state = { ...state, head: sha, todo: p.newTodo, done: p.newDone };
     renderLists(state.todo, state.done);
   } catch (e) { log(e.message, "err"); }
   setBusy(false);
@@ -789,7 +794,7 @@ async function run() {
     const removed = autoClean(tree, now);
     if (removed.length) log(`Removing ${removed.length} past train ride(s).`);
     log("Asking Gemini…");
-    const ai = await callGemini(command, renderTree(tree), renderDone(state.done), now);
+    const ai = await callGemini(command, renderTree(tree), renderDone(state.done), now, state.context);
     log(`Gemini: ${ai.summary || "(no summary)"}`);
     const res = applyOps(tree, ids, state.done, ai.operations);
     res.notes.forEach(n => log("  " + n));
