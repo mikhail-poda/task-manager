@@ -1,0 +1,744 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Manager</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #1d2330; --muted: #667085; --line: #d9dee7;
+    --accent: #2f6fed; --accent-fg: #fff; --card: #f6f8fb;
+    --add: #e6f6ea; --del: #fde8e8; --err: #b42318; --ok: #1a7f37;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151c; --fg: #e6e9ef; --muted: #98a2b3; --line: #2b3240;
+      --accent: #5b8cff; --accent-fg: #0b1020; --card: #1a1f2a;
+      --add: #12301d; --del: #3a1a1a; --err: #ff8a80; --ok: #6ee787;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 760px; margin: 0 auto; padding: 12px 16px 48px; }
+  h1 { font-size: 1.15rem; margin: 8px 0 12px; }
+  nav { display: flex; gap: 4px; border-bottom: 1px solid var(--line); margin-bottom: 16px; overflow-x: auto; }
+  nav button { background: none; border: none; color: var(--muted); padding: 10px 14px; font: inherit;
+    cursor: pointer; border-bottom: 2px solid transparent; white-space: nowrap; }
+  nav button.active { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+  section { display: none; }
+  section.active { display: block; }
+  textarea, input { width: 100%; font: inherit; color: var(--fg); background: var(--card);
+    border: 1px solid var(--line); border-radius: 8px; padding: 10px; }
+  textarea { min-height: 90px; resize: vertical; }
+  label { display: block; margin: 12px 0 4px; font-size: .85rem; color: var(--muted); }
+  label.inline { display: flex; align-items: center; gap: 8px; color: var(--fg); font-size: .95rem; }
+  label.inline input { width: auto; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  button.btn { background: var(--accent); color: var(--accent-fg); border: none; border-radius: 8px;
+    padding: 10px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+  button.btn.secondary { background: var(--card); color: var(--fg); border: 1px solid var(--line); }
+  button.btn:disabled { opacity: .5; cursor: default; }
+  #log { margin-top: 16px; background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px; font: .82rem/1.45 ui-monospace, Menlo, Consolas, monospace; max-height: 260px; overflow: auto; }
+  #log div.err { color: var(--err); } #log div.ok { color: var(--ok); }
+  #preview { display: none; margin-top: 16px; border: 1px solid var(--line); border-radius: 8px; padding: 12px; background: var(--card); }
+  #preview h2 { font-size: 1rem; margin: 0 0 6px; }
+  .diff { font: .82rem/1.45 ui-monospace, Menlo, Consolas, monospace; margin: 6px 0 10px; overflow-x: auto; }
+  .diff div { white-space: pre-wrap; padding: 0 6px; }
+  .diff .a { background: var(--add); } .diff .d { background: var(--del); } .diff .c { color: var(--muted); }
+  .md { word-wrap: break-word; }
+  .md ul { padding-left: 1.2em; } .md li { margin: 3px 0; }
+  .md hr { border: none; border-top: 1px solid var(--line); margin: 16px 0; }
+  .hint { color: var(--muted); font-size: .85rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Task Manager</h1>
+  <nav id="tabs">
+    <button data-tab="cmd" class="active">Command</button>
+    <button data-tab="todo">Todo</button>
+    <button data-tab="done">Done</button>
+    <button data-tab="settings">Settings</button>
+  </nav>
+
+  <section id="cmd" class="active">
+    <textarea id="prompt" placeholder='e.g. "Friseurtermin ist erledigt" or "Am 3.11. um 14 Uhr Zahnarzt"'></textarea>
+    <div class="row">
+      <button class="btn" id="go">Run</button>
+      <button class="btn secondary" id="refresh">Refresh</button>
+    </div>
+    <div id="preview">
+      <h2>Proposed changes</h2>
+      <div id="pv-summary"></div>
+      <div id="pv-diff"></div>
+      <div class="row">
+        <button class="btn" id="pv-ok">Commit</button>
+        <button class="btn secondary" id="pv-cancel">Cancel</button>
+      </div>
+    </div>
+    <div id="log" aria-live="polite"></div>
+  </section>
+
+  <section id="todo"><div id="todo-view" class="md"></div></section>
+  <section id="done"><div id="done-view" class="md"></div></section>
+
+  <section id="settings">
+    <label>GitHub token (fine-grained, Contents: read/write on the data repo only)</label>
+    <input id="s-ghToken" type="password" autocomplete="off">
+    <label>Repository owner</label><input id="s-owner" autocomplete="off">
+    <label>Repository name</label><input id="s-repo" autocomplete="off">
+    <label>Branch</label><input id="s-branch" autocomplete="off">
+    <label>Todo file path</label><input id="s-todoPath" autocomplete="off">
+    <label>Done file path</label><input id="s-donePath" autocomplete="off">
+    <label>Gemini API key</label>
+    <input id="s-gemKey" type="password" autocomplete="off">
+    <label>Gemini model</label><input id="s-model" autocomplete="off">
+    <label class="inline"><input id="s-confirm" type="checkbox"> Show a preview and ask before committing (off = commit silently)</label>
+    <div class="row"><button class="btn" id="save">Save settings</button></div>
+    <p class="hint">Settings are stored only in this browser (localStorage). Your task text is sent to Google when you run a command. Every change is a git commit, so history in GitHub is your undo.</p>
+  </section>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/marked/12.0.2/marked.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/dompurify/3.1.6/purify.min.js"></script>
+<script>
+// ==PURE==
+const DATED_RE = /chronolog/i;        // title of the sorted section
+const FALLBACK_RE = /mittelfristig/i; // section for items that fit nowhere else
+const WD = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"];
+const pad = n => String(n).padStart(2, "0");
+
+function cleanText(t) {
+  return String(t == null ? "" : t).replace(/\s+/g, " ").replace(/^[*-]\s+/, "").trim();
+}
+const val = x => (x == null ? "" : String(x).trim());
+const mkNode = raw => ({ raw, kids: [], removed: false });
+
+// ---- todo.md: sections (# ...) -> items -> optional children. Max two bullet levels.
+function parseTodo(text) {
+  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  const sections = [];
+  let cur = null, top = null;
+  const fail = (i, why) => { throw new Error(`todo.md line ${i + 1}: ${why}`); };
+  lines.forEach((line, i) => {
+    if (!line.trim()) return;
+    if (/^-{3,}\s*$/.test(line)) { cur = null; top = null; return; }
+    let m = /^#\s+(.*\S)\s*$/.exec(line);
+    if (m) { cur = { title: m[1], items: [] }; sections.push(cur); top = null; return; }
+    m = /^( *)[*-]\s+(.*\S)\s*$/.exec(line);
+    if (!m) fail(i, "unsupported line: " + line.slice(0, 50));
+    if (!cur) fail(i, "list item outside of a # section");
+    const ind = m[1].length;
+    const node = mkNode(m[2]);
+    if (ind === 0) { cur.items.push(node); top = node; }
+    else if (ind <= 3) { if (!top) fail(i, "indented item without parent"); top.kids.push(node); }
+    else fail(i, "more than two list levels are not supported");
+  });
+  if (!sections.length) throw new Error("todo.md has no # sections");
+  return { sections };
+}
+
+function serializeTodo(tree) {
+  const blocks = tree.sections.map(s => {
+    const out = [];
+    for (const n of s.items) {
+      if (n.removed) continue;
+      if (n.kids.length) {
+        const ks = n.kids.filter(k => !k.removed);
+        if (!ks.length) continue;              // empty parent node disappears
+        out.push("* " + n.raw);
+        ks.forEach(k => out.push("  * " + k.raw));
+      } else out.push("* " + n.raw);
+    }
+    return "# " + s.title + "\n" + (out.length ? "\n" + out.join("\n") + "\n" : "");
+  });
+  return blocks.join("\n---\n\n");
+}
+
+function assignIds(tree) {
+  const map = new Map(); let g = 0, l = 0;
+  tree.sections.forEach((s, i) => {
+    s.id = "S" + (i + 1); s.kind = "sec"; map.set(s.id, s);
+    s.items.forEach(n => {
+      n.sec = s; n.par = null;
+      if (n.kids.length) {
+        n.id = "G" + (++g); n.kind = "group"; map.set(n.id, n);
+        n.kids.forEach(k => { k.id = "L" + (++l); k.kind = "leaf"; k.sec = s; k.par = n; map.set(k.id, k); });
+      } else { n.id = "L" + (++l); n.kind = "leaf"; map.set(n.id, n); }
+    });
+  });
+  return map;
+}
+
+function renderTree(tree) {
+  const out = [];
+  for (const s of tree.sections) {
+    out.push(`${s.id} | ${s.title}${DATED_RE.test(s.title) ? "   [chronological section: use add_event]" : ""}`);
+    for (const n of s.items) {
+      if (n.removed) continue;
+      if (n.kids.length) {
+        const ks = n.kids.filter(k => !k.removed);
+        if (!ks.length) continue;
+        out.push(`  ${n.id} | ${n.raw}`);
+        ks.forEach(k => out.push(`    ${k.id} | ${k.raw}`));
+      } else out.push(`  ${n.id} | ${n.raw}`);
+    }
+  }
+  return out.join("\n");
+}
+
+// ---- dates and times
+const isoValid = s => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || "");
+  if (!m) return false;
+  const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]));
+  return d.getUTCMonth() === +m[2] - 1 && d.getUTCDate() === +m[3];
+};
+function dayParts(iso) {
+  const [y, m, d] = iso.split("-").map(Number);
+  return { wd: WD[new Date(Date.UTC(y, m - 1, d)).getUTCDay()], dd: pad(d), mm: pad(m), y };
+}
+function groupTitle(startIso, endIso) {
+  const a = dayParts(startIso);
+  if (!endIso || endIso === startIso) return `${a.wd}, ${a.dd}.${a.mm}.${a.y}`;
+  const b = dayParts(endIso);
+  return `${a.wd} ${a.dd}.${a.mm}. – ${b.wd} ${b.dd}.${b.mm}.${b.y}`;
+}
+// first and last date mentioned in a group title -> {start, end} as ISO, or null
+function parseGroupDates(raw) {
+  const re = /(\d{1,2})\.(\d{1,2})\.(\d{4})?/g;
+  const found = []; let m, year = null;
+  const s = String(raw).replace(/\*/g, "");
+  while ((m = re.exec(s))) { found.push({ d: +m[1], mo: +m[2], y: m[3] ? +m[3] : null }); if (m[3]) year = +m[3]; }
+  if (!found.length || year == null) return null;
+  const iso = f => `${f.y || year}-${pad(f.mo)}-${pad(f.d)}`;
+  const start = iso(found[0]), end = iso(found[found.length - 1]);
+  return isoValid(start) && isoValid(end) ? { start, end } : null;
+}
+// minutes since midnight of the first HH:MM in the text; -1 if none
+function timeKey(raw) {
+  const m = /(\d{1,2}):(\d{2})/.exec(String(raw));
+  return m ? +m[1] * 60 + +m[2] : -1;
+}
+const datedSection = tree => tree.sections.find(s => DATED_RE.test(s.title)) || null;
+
+function buildEventLeaf(label, text) {
+  const l = cleanText(label).replace(/\*/g, "").trim();
+  const t = cleanText(text);
+  if (!t) throw new Error("add_event needs text");
+  return l ? `**${l}** ${t}` : t;
+}
+function insertEvent(sec, startIso, endIso, leafRaw) {
+  const leaf = mkNode(leafRaw);
+  let g = sec.items.find(n => {
+    if (n.removed || !n.kids.length) return false;
+    const d = parseGroupDates(n.raw);
+    return d && d.start === startIso && d.end === endIso;
+  });
+  if (g) {
+    const key = timeKey(leafRaw);
+    const next = g.kids.find(k => !k.removed && timeKey(k.raw) > key);
+    g.kids.splice(next ? g.kids.indexOf(next) : g.kids.length, 0, leaf);
+  } else {
+    g = { raw: `**${groupTitle(startIso, endIso)}**`, kids: [leaf], removed: false };
+    const next = sec.items.find(n => {
+      if (n.removed || !n.kids.length) return false;
+      const d = parseGroupDates(n.raw);
+      return d && d.start > startIso;
+    });
+    sec.items.splice(next ? sec.items.indexOf(next) : sec.items.length, 0, g);
+  }
+}
+
+// Removes Zugfahrt leaves whose start (date + first time) is already in the past.
+function autoClean(tree, now) {   // now = {date: "YYYY-MM-DD", minutes}
+  const sec = datedSection(tree); const removed = [];
+  if (!sec) return removed;
+  for (const g of sec.items) {
+    if (g.removed || !g.kids.length) continue;
+    const d = parseGroupDates(g.raw);
+    if (!d) continue;
+    for (const k of g.kids) {
+      if (k.removed || !/zugfahrt/i.test(k.raw)) continue;
+      const t = timeKey(k.raw);
+      const past = d.start < now.date || (d.start === now.date && t >= 0 && t <= now.minutes);
+      if (past) { k.removed = true; removed.push(k.raw); }
+    }
+  }
+  return removed;
+}
+
+// ---- done.md: flat list, new items appended at the end, everything else untouched
+function parseDone(text) {
+  const orig = String(text || "");
+  const lines = orig.replace(/\r\n/g, "\n").split("\n");
+  const items = [];
+  lines.forEach((l, i) => { const m = /^\s*[*-]\s+(.*\S)\s*$/.exec(l); if (m) items.push({ i, text: m[1] }); });
+  return { orig, lines, items, removed: new Set(), added: [] };
+}
+function doneTake(d, n) {
+  if (!Number.isInteger(n) || n < 1 || n > d.items.length) throw new Error(`Invalid done item number ${n}`);
+  const it = d.items[n - 1];
+  if (d.removed.has(it.i)) throw new Error(`Done item ${n} was already changed`);
+  d.removed.add(it.i);
+  return it.text;
+}
+function doneOut(d) {
+  if (!d.removed.size && !d.added.length) return d.orig;
+  const lines = d.lines.filter((_, i) => !d.removed.has(i));
+  while (lines.length && lines[lines.length - 1] === "") lines.pop();
+  d.added.forEach(t => lines.push("* " + t));
+  return lines.join("\n") + "\n";
+}
+function renderDone(text) {
+  const d = parseDone(text);
+  return d.items.length ? d.items.map((it, i) => `D${i + 1} | ${it.text}`).join("\n") : "(empty)";
+}
+
+// ---- operations from Gemini (ids refer to the tree as it was shown)
+function applyOps(tree, ids, doneText, ops) {
+  const dated = datedSection(tree);
+  const fallback = tree.sections.find(s => FALLBACK_RE.test(s.title)) || null;
+  const done = parseDone(doneText);
+  const notes = [];
+  const need = (id, kind) => {
+    const n = ids.get(val(id));
+    if (!n) throw new Error(`Unknown id "${id}"`);
+    if (n.removed) throw new Error(`${id} was already changed by another operation`);
+    if (kind && n.kind !== kind) throw new Error(`${id} is not a ${kind === "sec" ? "section" : kind}`);
+    return n;
+  };
+  const target = op => {
+    let sec = null, grp = null;
+    if (val(op.group)) { grp = need(op.group, "group"); sec = grp.sec; }
+    if (val(op.section)) {
+      const s = need(op.section, "sec");
+      if (sec && s !== sec) throw new Error(`Group ${op.group} is not in section ${op.section}`);
+      sec = s;
+    }
+    if (!sec) sec = fallback;
+    if (!sec) throw new Error("No target section");
+    if (sec === dated) throw new Error("The chronological section only accepts add_event");
+    return { sec, grp };
+  };
+  const put = (t, raw) => { const n = mkNode(raw); (t.grp ? t.grp.kids : t.sec.items).push(n); };
+
+  for (const op of ops) {
+    switch (op.type) {
+      case "add_event": {
+        if (!dated) throw new Error("No chronological section found");
+        const d = val(op.date), e = val(op.end_date) || d;
+        if (!isoValid(d) || !isoValid(e) || e < d) throw new Error(`Invalid date "${op.date}"`);
+        const raw = buildEventLeaf(op.label, op.text);
+        insertEvent(dated, d, e, raw);
+        notes.push(`event ${d}: ${raw}`);
+        break;
+      }
+      case "add_leaf": {
+        const t = target(op);
+        const raw = cleanText(op.text);
+        if (!raw) throw new Error("add_leaf needs text");
+        put(t, raw); notes.push(`add: ${raw}`);
+        break;
+      }
+      case "add_group": {
+        const t = target({ section: op.section });
+        const title = cleanText(op.title);
+        const leaves = (op.leaves || []).map(cleanText).filter(Boolean);
+        if (!title || !leaves.length) throw new Error("add_group needs a title and leaves");
+        const key = s => s.replace(/\*/g, "").replace(/[:\s]+$/, "").toLowerCase();
+        let g = t.sec.items.find(n => !n.removed && n.kids.length && key(n.raw) === key(title));
+        if (!g) { g = { raw: /\*\*/.test(title) ? title : `**${title}**`, kids: [], removed: false }; t.sec.items.push(g); }
+        leaves.forEach(x => g.kids.push(mkNode(x)));
+        notes.push(`group: ${title} (+${leaves.length})`);
+        break;
+      }
+      case "edit": {
+        const n = need(op.id, "leaf");
+        const raw = cleanText(op.text);
+        if (!raw) throw new Error("edit needs text");
+        n.raw = raw; notes.push(`edit ${op.id}: ${raw}`);
+        break;
+      }
+      case "delete": {
+        const n = need(op.id, "leaf");
+        n.removed = true; notes.push(`delete: ${n.raw}`);
+        break;
+      }
+      case "move_to_done": {
+        const n = need(op.id, "leaf");
+        n.removed = true;
+        if (/zugfahrt/i.test(n.raw)) notes.push(`removed (Zugfahrt, not archived): ${n.raw}`);
+        else { done.added.push(n.raw); notes.push(`done: ${n.raw}`); }
+        break;
+      }
+      case "move": {
+        const n = need(op.id, "leaf");
+        const t = target(op);
+        n.removed = true; put(t, n.raw); notes.push(`move: ${n.raw}`);
+        break;
+      }
+      case "reopen": {
+        const t = target(op);
+        const text = doneTake(done, op.done_item);
+        put(t, text); notes.push(`reopen: ${text}`);
+        break;
+      }
+      default:
+        throw new Error(`Unknown operation type "${op.type}"`);
+    }
+  }
+  return { done: doneOut(done), notes };
+}
+
+// Line diff via LCS; files are small. Returns [{t:' '|'+'|'-', s}]
+function lineDiff(a, b) {
+  const A = String(a || "").split("\n"), B = String(b || "").split("\n");
+  if (A[A.length - 1] === "") A.pop();
+  if (B[B.length - 1] === "") B.pop();
+  const n = A.length, m = B.length;
+  const L = Array.from({ length: n + 1 }, () => new Int32Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      L[i][j] = A[i] === B[j] ? L[i + 1][j + 1] + 1 : Math.max(L[i + 1][j], L[i][j + 1]);
+  const out = []; let i = 0, j = 0;
+  while (i < n && j < m) {
+    if (A[i] === B[j]) { out.push({ t: " ", s: A[i] }); i++; j++; }
+    else if (L[i + 1][j] >= L[i][j + 1]) out.push({ t: "-", s: A[i++] });
+    else out.push({ t: "+", s: B[j++] });
+  }
+  while (i < n) out.push({ t: "-", s: A[i++] });
+  while (j < m) out.push({ t: "+", s: B[j++] });
+  return out;
+}
+// ==/PURE==
+
+// ---------- config ----------
+const DEFAULTS = {
+  ghToken: "", owner: "mikhail-poda", repo: "tasks-data", branch: "main",
+  todoPath: "todo.md", donePath: "done.md", gemKey: "", model: "gemini-2.5-flash", confirm: false
+};
+const FIELDS = ["ghToken", "owner", "repo", "branch", "todoPath", "donePath", "gemKey", "model"];
+const $ = id => document.getElementById(id);
+
+function loadCfg() {
+  let saved = {};
+  try { saved = JSON.parse(localStorage.getItem("taskmgr_cfg") || "{}"); } catch (e) {}
+  return Object.assign({}, DEFAULTS, saved);
+}
+function saveCfg(c) {
+  try { localStorage.setItem("taskmgr_cfg", JSON.stringify(c)); return true; } catch (e) { return false; }
+}
+const cfg = loadCfg();
+function fillSettings() {
+  for (const f of FIELDS) $("s-" + f).value = cfg[f];
+  $("s-confirm").checked = !!cfg.confirm;
+}
+function configured() { return cfg.ghToken && cfg.gemKey && cfg.owner && cfg.repo; }
+
+// ---------- ui helpers ----------
+function log(msg, cls) {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = `${new Date().toLocaleTimeString()}  ${msg}`;
+  $("log").appendChild(d);
+  $("log").scrollTop = $("log").scrollHeight;
+}
+function showTab(name) {
+  document.querySelectorAll("#tabs button").forEach(b => b.classList.toggle("active", b.dataset.tab === name));
+  document.querySelectorAll("section").forEach(s => s.classList.toggle("active", s.id === name));
+}
+function renderMd(el, text) {
+  if (window.marked && window.DOMPurify) el.innerHTML = DOMPurify.sanitize(marked.parse(text || ""));
+  else { el.textContent = text || ""; }
+}
+function renderLists(todo, done) { renderMd($("todo-view"), todo); renderMd($("done-view"), done); }
+function setBusy(b) { $("go").disabled = b; $("refresh").disabled = b; }
+
+// ---------- GitHub ----------
+const encPath = p => p.split("/").map(encodeURIComponent).join("/");
+async function gh(path, opts = {}) {
+  const res = await fetch("https://api.github.com" + path, {
+    cache: "no-store",
+    ...opts,
+    headers: Object.assign({
+      Accept: "application/vnd.github+json",
+      Authorization: "Bearer " + cfg.ghToken,
+      "X-GitHub-Api-Version": "2022-11-28"
+    }, opts.body ? { "Content-Type": "application/json" } : {}, opts.headers || {})
+  });
+  if (!res.ok) {
+    let msg = "";
+    try { msg = (await res.json()).message; } catch (e) {}
+    const err = new Error(`GitHub ${res.status}: ${msg || res.statusText}`);
+    err.status = res.status;
+    throw err;
+  }
+  return res;
+}
+const repoBase = () => `/repos/${encodeURIComponent(cfg.owner)}/${encodeURIComponent(cfg.repo)}`;
+
+async function getHead() {
+  const r = await gh(`${repoBase()}/git/ref/heads/${encPath(cfg.branch)}`);
+  return (await r.json()).object.sha;
+}
+async function getFile(path, ref) {
+  try {
+    const r = await gh(`${repoBase()}/contents/${encPath(path)}?ref=${ref}`, {
+      headers: { Accept: "application/vnd.github.raw+json" }
+    });
+    return await r.text();
+  } catch (e) {
+    if (e.status === 404) return "";
+    throw e;
+  }
+}
+async function fetchState() {
+  const head = await getHead();
+  const [todo, done] = await Promise.all([getFile(cfg.todoPath, head), getFile(cfg.donePath, head)]);
+  return { head, todo, done };
+}
+async function commitFiles(files, message, parent) {
+  const base = repoBase();
+  const parentCommit = await (await gh(`${base}/git/commits/${parent}`)).json();
+  const entries = [];
+  for (const f of files) {
+    const blob = await (await gh(`${base}/git/blobs`, {
+      method: "POST", body: JSON.stringify({ content: f.content, encoding: "utf-8" })
+    })).json();
+    entries.push({ path: f.path, mode: "100644", type: "blob", sha: blob.sha });
+  }
+  const tree = await (await gh(`${base}/git/trees`, {
+    method: "POST", body: JSON.stringify({ base_tree: parentCommit.tree.sha, tree: entries })
+  })).json();
+  const commit = await (await gh(`${base}/git/commits`, {
+    method: "POST", body: JSON.stringify({ message, tree: tree.sha, parents: [parent] })
+  })).json();
+  try {
+    await gh(`${base}/git/refs/heads/${encPath(cfg.branch)}`, {
+      method: "PATCH", body: JSON.stringify({ sha: commit.sha, force: false })
+    });
+  } catch (e) {
+    if (e.status === 422 || e.status === 409)
+      throw new Error("The repository changed while you were working. Nothing was written. Press Refresh and try again.");
+    throw e;
+  }
+  return commit.sha;
+}
+
+// ---------- Gemini ----------
+const SYSTEM_PROMPT = `You maintain a personal task list stored as a tree. The user writes a command in German or English.
+You see TODO as sections (S..), optional groups (G..) and leaves (L..), plus a flat DONE list (D1, D2, ...). Return JSON with "operations" and "summary".
+All ids refer to the tree as shown; they stay valid while all operations are applied. Never invent ids.
+
+Operations:
+- add_event: {date:"YYYY-MM-DD", end_date?, label?, text}  Adds a dated event to the chronological section (the one marked [chronological]). The code creates the day group, writes the weekday and sorts by time. "label" is the bold prefix, e.g. "10:30 Uhr:" or "08:00 – 09:30 Uhr:" or "ab 11:30 Uhr (To-Do):", and is omitted for events without a time. "text" is the description. Use end_date only for multi-day events.
+- add_leaf: {section, group?, text}  New item in any other section; "group" only if it clearly belongs in an existing group.
+- add_group: {section, title, leaves[]}  New parent item with several children, e.g. title "Behörden & Steuern:". If a group with that title exists, the leaves are added to it.
+- edit: {id, text}  Replace the full text of one leaf (keep its bold label/markdown formatting). Do NOT use it to change a date or time.
+- delete: {id}
+- move_to_done: {id}  The item is archived in the DONE list by the code (train rides are just removed).
+- move: {id, section, group?}  Move a leaf to a non-chronological section.
+- reopen: {done_item: <number>, section, group?}  Take an item from DONE back into the TODO tree.
+Only leaves can be edited, deleted or moved, never groups or sections. To clear a group, delete or finish all of its leaves; the empty group is removed by the code.
+To change an event's date or time: delete the old leaf and add_event the new one.
+
+Rules:
+- Do only what the command asks. Never touch other items.
+- If an item does not fit any other section, put it in the section "Mittelfristig Allgmein" (the catch-all).
+- Keep the user's wording; do not translate item text. Text must not start with a list marker.
+- Resolve relative dates ("morgen", "nächsten Freitag") from the given today.
+- If the command is ambiguous, refers to something that does not exist, or needs no change, return an empty operations array and explain in the summary.
+- The summary is one short sentence in the language of the command.`;
+
+async function callGemini(command, treeText, doneText, now) {
+  const body = {
+    systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+    contents: [{ role: "user", parts: [{ text:
+      `Today: ${now.date} (${now.weekday}), time ${now.hhmm}\n\nTODO:\n${treeText}\n\nDONE:\n${doneText}\n\nCOMMAND:\n${command}` }] }],
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 8192,
+      responseMimeType: "application/json",
+      responseSchema: {
+        type: "OBJECT",
+        properties: {
+          summary: { type: "STRING" },
+          operations: {
+            type: "ARRAY",
+            items: {
+              type: "OBJECT",
+              properties: {
+                type: { type: "STRING", enum: ["add_event", "add_leaf", "add_group", "edit", "delete", "move_to_done", "move", "reopen"] },
+                id: { type: "STRING" },
+                section: { type: "STRING" },
+                group: { type: "STRING" },
+                date: { type: "STRING" },
+                end_date: { type: "STRING" },
+                label: { type: "STRING" },
+                text: { type: "STRING" },
+                title: { type: "STRING" },
+                leaves: { type: "ARRAY", items: { type: "STRING" } },
+                done_item: { type: "INTEGER" }
+              },
+              required: ["type"]
+            }
+          }
+        },
+        required: ["summary", "operations"]
+      }
+    }
+  };
+  const res = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(cfg.model)}:generateContent`,
+    { method: "POST", headers: { "Content-Type": "application/json", "x-goog-api-key": cfg.gemKey },
+      body: JSON.stringify(body) });
+  if (!res.ok) {
+    let msg = "";
+    try { msg = (await res.json()).error.message; } catch (e) {}
+    if (res.status === 429) throw new Error("Gemini rate limit or quota reached. Wait a bit and try again. " + msg);
+    throw new Error(`Gemini ${res.status}: ${msg || res.statusText}`);
+  }
+  const data = await res.json();
+  const cand = data.candidates && data.candidates[0];
+  if (!cand) throw new Error("Gemini returned no answer" + (data.promptFeedback ? " (blocked: " + data.promptFeedback.blockReason + ")" : ""));
+  if (cand.finishReason && cand.finishReason !== "STOP") throw new Error("Gemini stopped early: " + cand.finishReason);
+  const txt = (cand.content.parts || []).map(p => p.text || "").join("");
+  let parsed;
+  try { parsed = JSON.parse(txt); } catch (e) { throw new Error("Gemini returned invalid JSON"); }
+  if (!parsed || !Array.isArray(parsed.operations)) throw new Error("Gemini answer has no operations list");
+  return parsed;
+}
+
+// ---------- app flow ----------
+let state = null;     // {head, todo, done}
+let pending = null;   // {files, message, newTodo, newDone}
+
+function nowInfo() {
+  const d = new Date();
+  return {
+    date: d.toLocaleDateString("sv-SE"),
+    minutes: d.getHours() * 60 + d.getMinutes(),
+    hhmm: `${pad(d.getHours())}:${pad(d.getMinutes())}`,
+    weekday: WD[d.getDay()]
+  };
+}
+
+async function refresh() {
+  if (!configured()) { log("Please fill in Settings first.", "err"); showTab("settings"); return false; }
+  try {
+    state = await fetchState();
+    renderLists(state.todo, state.done);
+    log(`Fetched files at ${state.head.slice(0, 7)}.`);
+    return true;
+  } catch (e) { log(e.message, "err"); return false; }
+}
+
+function showPreview(files, summary) {
+  const box = $("pv-diff"); box.innerHTML = "";
+  $("pv-summary").textContent = summary;
+  for (const f of files) {
+    const h = document.createElement("div"); h.className = "hint"; h.textContent = f.path; box.appendChild(h);
+    const wrap = document.createElement("div"); wrap.className = "diff";
+    const d = lineDiff(f.before, f.content);
+    d.forEach((l, i) => {
+      const near = d.slice(Math.max(0, i - 1), i + 2).some(x => x.t !== " ");
+      if (!near) return;
+      const row = document.createElement("div");
+      row.className = l.t === "+" ? "a" : l.t === "-" ? "d" : "c";
+      row.textContent = (l.t === " " ? "  " : l.t + " ") + l.s;
+      wrap.appendChild(row);
+    });
+    box.appendChild(wrap);
+  }
+  $("preview").style.display = "block";
+}
+function hidePreview() { $("preview").style.display = "none"; pending = null; }
+
+async function doCommit() {
+  if (!pending) return;
+  const p = pending; hidePreview(); setBusy(true);
+  try {
+    const sha = await commitFiles(p.files, p.message, state.head);
+    log(`Committed ${sha.slice(0, 7)}: ${p.message}`, "ok");
+    state = { head: sha, todo: p.newTodo, done: p.newDone };
+    renderLists(state.todo, state.done);
+  } catch (e) { log(e.message, "err"); }
+  setBusy(false);
+}
+
+// Builds the pending commit from a modified tree; returns null if nothing changed.
+function buildPending(baselineTodo, tree, newDone, message) {
+  const newTodo = serializeTodo(tree);
+  const files = [];
+  if (newTodo !== baselineTodo) files.push({ path: cfg.todoPath, content: newTodo, before: baselineTodo });
+  if (newDone !== state.done) files.push({ path: cfg.donePath, content: newDone, before: state.done });
+  if (!files.length) return null;
+  return { files, message: message.slice(0, 200),
+    newTodo: files.some(f => f.path === cfg.todoPath) ? newTodo : state.todo, newDone };
+}
+
+// On open: remove past Zugfahrten, commit silently.
+async function startup() {
+  if (!(await refresh())) return;
+  try {
+    const tree = parseTodo(state.todo);
+    const baseline = serializeTodo(tree);
+    const removed = autoClean(tree, nowInfo());
+    if (!removed.length) return;
+    pending = buildPending(baseline, tree, state.done, `Auto: ${removed.length} vergangene Zugfahrt(en) entfernt`);
+    if (pending) { log(`Removing ${removed.length} past train ride(s).`); await doCommit(); }
+  } catch (e) { log(e.message, "err"); }
+}
+
+async function run() {
+  const command = $("prompt").value.trim();
+  if (!command) return;
+  if (!configured()) { log("Please fill in Settings first.", "err"); showTab("settings"); return; }
+  hidePreview(); setBusy(true);
+  try {
+    log(`Command: ${command}`);
+    if (!(await refresh())) return;
+    const tree = parseTodo(state.todo);
+    const baseline = serializeTodo(tree);
+    const ids = assignIds(tree);
+    const now = nowInfo();
+    const removed = autoClean(tree, now);
+    if (removed.length) log(`Removing ${removed.length} past train ride(s).`);
+    log("Asking Gemini…");
+    const ai = await callGemini(command, renderTree(tree), renderDone(state.done), now);
+    log(`Gemini: ${ai.summary || "(no summary)"}`);
+    const res = applyOps(tree, ids, state.done, ai.operations);
+    res.notes.forEach(n => log("  " + n));
+    pending = buildPending(baseline, tree, res.done, `Tasks: ${ai.summary || command}`);
+    if (!pending) { log("No changes made.", "ok"); return; }
+    $("prompt").value = "";
+    if (cfg.confirm) showPreview(pending.files, ai.summary);
+    else await doCommit();
+  } catch (e) { log(e.message, "err"); }
+  finally { setBusy(false); }
+}
+
+// ---------- wiring ----------
+document.querySelectorAll("#tabs button").forEach(b => b.addEventListener("click", () => showTab(b.dataset.tab)));
+$("go").addEventListener("click", run);
+$("refresh").addEventListener("click", refresh);
+$("pv-ok").addEventListener("click", doCommit);
+$("pv-cancel").addEventListener("click", () => { hidePreview(); log("Cancelled. Nothing was written."); });
+$("prompt").addEventListener("keydown", e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) run(); });
+$("save").addEventListener("click", () => {
+  for (const f of FIELDS) cfg[f] = $("s-" + f).value.trim();
+  cfg.confirm = $("s-confirm").checked;
+  if (saveCfg(cfg)) log("Settings saved in this browser.", "ok");
+  else log("Could not save settings: browser storage is blocked.", "err");
+  showTab("cmd");
+  startup();
+});
+
+fillSettings();
+if (configured()) startup(); else showTab("settings");
+</script>
+</body>
+</html>
